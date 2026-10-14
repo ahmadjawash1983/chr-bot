@@ -1,6 +1,5 @@
 import os
 import threading
-import requests
 import ccxt
 import pandas as pd
 from flask import Flask
@@ -48,17 +47,4 @@ def analyze(symbol):
     df['rsi'] = rsi(df['c'], 14)
     df['atr'] = atr(df['h'], df['l'], df['c'], 14)
     e12 = ema(df['c'], 12)
-    e26 = ema(df['c'], 26)
-    df['macd'] = e12 - e26
-    df['signal'] = ema(df['macd'], 9)
-    last = df.iloc[-1]
-    vol_avg = df['v'].rolling(20).mean().iloc[-1]
-
-    score = 0
-    reasons = []
-    if last['c'] > last['ema50'] and last['ema50'] > last['ema200']:
-        score += 2
-        reasons.append("Uptrend EMA")
-    if 30 < last['rsi'] < 50:
-        score += 1
-        reasons.append(f"RSI {last
+   
