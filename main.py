@@ -1,7 +1,7 @@
 import ccxt, pandas as pd, requests, time, threading, os
 from flask import Flask
 
-TELEGRAM_TOKEN = "8809582860:AAEbunAHrIaNu3u6B_SQvrYu4O1N7qOFv4E"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = None
 BUDGET = 400
 
