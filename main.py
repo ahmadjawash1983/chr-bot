@@ -1,31 +1,27 @@
 import ccxt
 import pandas as pd
 import os
-import asyncio
 from threading import Thread
 from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- الاعدادات الماسية ---
 CAPITAL = 400
 RISK_PCT = 1.5
 TIMEFRAME = '30m'
 COINS = ['BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT','ADA/USDT','DOGE/USDT','AVAX/USDT','DOT/USDT','LINK/USDT','MATIC/USDT','LTC/USDT','TRX/USDT','SHIB/USDT','UNI/USDT','ATOM/USDT','ETC/USDT','XLM/USDT','NEAR/USDT','ARB/USDT']
 
 exchange = ccxt.kucoin()
-ALERT_CHAT_ID = None # رح ينحفظ تلقائي أول ما تبعت أي أمر
+ALERT_CHAT_ID = None
 
-# --- كيب ألايف مشان Render ما ينام ---
 flask_app = Flask('')
 @flask_app.route('/')
-def home(): return "Bot is ALIVE - Diamond V3"
+def home(): return "Bot is ALIVE - Diamond V3.1"
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 def keep_alive():
     Thread(target=run_flask, daemon=True).start()
 
-# --- التحليل ---
 def analyze(symbol):
     bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
     df = pd.DataFrame(bars, columns=['t','o','h','l','c','v'])
@@ -68,7 +64,6 @@ def analyze(symbol):
     status = "GOLDEN BUY 🔥" if score >=4 else "WAIT"
     return price, score, reasons, stop, target, qty, status
 
-# --- أوامر التيليجرام ---
 async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ALERT_CHAT_ID
     ALERT_CHAT_ID = update.effective_chat.id
@@ -76,10 +71,10 @@ async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         a = context.args[0].upper()
         symbol = a + "/USDT" if "/" not in a else a
-    await update.message.reply_text(f"Analyzing {symbol}...")
+    await update.message.reply_text(f"🔍 Analyzing {symbol}...")
     try:
         price, score, reasons, stop, target, qty, status = analyze(symbol)
-        txt = f"{symbol} | {TIMEFRAME}\nPrice: {price:.2f}\nScore: {score}/6\nReasons: {', '.join(reasons)}\nStop: {stop:.4f}\nTarget: {target:.4f}\nQty: {qty:.4f}\n{status}\n\nAuto scan ON ✅ كل 30 دقيقة"
+        txt = f"{symbol} | {TIMEFRAME}\nPrice: {price:.2f}\nScore: {score}/6\nReasons: {', '.join(reasons) if reasons else 'Weak'}\nStop: {stop:.4f}\nTarget: {target:.4f}\nQty: {qty:.4f}\n{status}\n\n✅ Auto Alert ON كل 30 دقيقة"
         await update.message.reply_text(txt)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -87,20 +82,26 @@ async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ALERT_CHAT_ID
     ALERT_CHAT_ID = update.effective_chat.id
-    await update.message.reply_text(f"Scanning {len(COINS)} coins... Auto ALERT ON")
+    # هاد الرد الفوري مشان ما يعلق
+    await update.message.reply_text(f"🚀 بلشت سكان لـ {len(COINS)} عملة...\nرح ابعتلك النتائج خلال 30 ثانية، خليك معي")
+
     found = []
+    count = 0
     for s in COINS:
         try:
             price, score, reasons, stop, target, qty, status = analyze(s)
+            count+=1
             if score >=4:
-                found.append(f"{status}: {s} | Score {score}/6 | Price {price:.2f}")
-        except: pass
-    if found:
-        await update.message.reply_text("\n\n".join(found))
-    else:
-        await update.message.reply_text("No golden now. رح أفحص تلقائي كل 30 دقيقة وأبعتلك بس اذا لقيت GOLDEN 🔔")
+                found.append(f"{status}: {s} | Score {score}/6 | {price:.2f}")
+        except Exception as e:
+            print(f"Error {s}: {e}")
+            continue
 
-# --- السكان التلقائي كل 30 دقيقة ---
+    if found:
+        await update.message.reply_text("🔥 GOLDEN FOUND:\n\n" + "\n\n".join(found))
+    else:
+        await update.message.reply_text(f"✅ فحصت {count} عملة\nNo golden now - السوق ضعيف\nرح أفحص تلقائي كل 30 دقيقة وأبعتلك بس اذا لقيت GOLDEN 🔔")
+
 async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
     global ALERT_CHAT_ID
     if not ALERT_CHAT_ID: return
@@ -109,7 +110,7 @@ async def auto_scan_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             price, score, reasons, stop, target, qty, status = analyze(s)
             if score >=4:
-                found.append(f"🚨 GOLDEN FOUND 🔥\n{s} | Score {score}/6\nPrice {price:.2f}\nReasons: {', '.join(reasons)}\nStop {stop:.2f} Target {target:.2f}\nQty {qty:.4f}")
+                found.append(f"🚨 GOLDEN FOUND 🔥\n{s} | Score {score}/6\nPrice {price:.2f}\nReasons: {', '.join(reasons)}\nStop {stop:.2f} Target {target:.2f}")
         except: pass
     if found:
         for msg in found:
@@ -121,6 +122,5 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("analysis", analysis_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
-    # كل 30 دقيقة = 1800 ثانية
-    app.job_queue.run_repeating(auto_scan_job, interval=1800, first=60)
+    app.job_queue.run_repeating(auto_scan_job, interval=1800, first=120)
     app.run_polling()
