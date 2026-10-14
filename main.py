@@ -1,4 +1,5 @@
 import os
+import time
 import threading
 import ccxt
 from flask import Flask
@@ -106,6 +107,7 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     found = 0
     for s in TOP_COINS:
         try:
+            time.sleep(0.3)
             score, reasons, c, stop, target, qty = analyze(s)
             if score >= 5:
                 found += 1
