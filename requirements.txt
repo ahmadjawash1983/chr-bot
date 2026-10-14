@@ -1,5 +1,6 @@
-python-telegram-bot
-flask
+python-telegram-bot==20.7
+Flask
 ccxt
 pandas
+pandas-ta
 requests
