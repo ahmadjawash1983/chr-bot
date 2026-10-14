@@ -18,7 +18,7 @@ TOP_COINS = [
 ]
 
 app_flask = Flask(__name__)
-exchange = ccxt.binance()
+exchange = ccxt.kucoin()
 
 @app_flask.route('/')
 def home():
