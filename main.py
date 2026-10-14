@@ -130,7 +130,7 @@ def main():
     app.add_handler(CommandHandler("price", analysis_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
     print("Bot Started")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
