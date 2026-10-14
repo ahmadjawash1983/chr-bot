@@ -59,10 +59,11 @@ def analyze(symbol):
     status = "GOLDEN BUY" if score >=4 else "WAIT"
     return price, score, reasons, stop, target, qty, status
 
-async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def analysis_cmd(update, context):
     symbol = "BTC/USDT"
     if context.args:
-        symbol = context.args[0].upper() + "/USDT" if "/" not in context.args[0] else context.args[0].upper()
+        a = context.args[0].upper()
+        symbol = a + "/USDT" if "/" not in a else a
     await update.message.reply_text(f"Analyzing {symbol}...")
     try:
         price, score, reasons, stop, target, qty, status = analyze(symbol)
@@ -71,7 +72,7 @@ async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
-async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def scan_cmd(update, context):
     await update.message.reply_text(f"Scanning {len(COINS)} coins...")
     found = []
     for s in COINS:
@@ -79,7 +80,8 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             price, score, reasons, stop, target, qty, status = analyze(s)
             if score >=4:
                 found.append(f"{status}: {s} | Score {score}/6")
-        except: pass
+        except:
+            pass
     if found:
         await update.message.reply_text("\n\n".join(found))
     else:
