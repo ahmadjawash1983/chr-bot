@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import requests
 import ccxt
 from flask import Flask
 from telegram import Update
@@ -23,7 +24,24 @@ exchange = ccxt.kucoin()
 
 @app_flask.route('/')
 def home():
-    return "Diamond Bot Live - 400$ - No Pandas - Fixed"
+    return "Diamond Bot Live - News + Fear"
+
+def get_fear_greed():
+    try:
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5).json()
+        val = int(r['data'][0]['value'])
+        txt = r['data'][0]['value_classification']
+        return val, txt
+    except:
+        return 50, "Unknown"
+
+def get_news():
+    try:
+        r = requests.get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN", timeout=5).json()
+        news = r['Data'][:3]
+        return news
+    except:
+        return []
 
 def ema_calc(prices, period):
     k = 2 / (period + 1)
@@ -48,19 +66,15 @@ def analyze(symbol):
     highs = [b[2] for b in bars]
     lows = [b[3] for b in bars]
     vols = [b[5] for b in bars]
-
     c = closes[-1]
     ema50 = ema_calc(closes[-50:], 50)
     ema200 = ema_calc(closes[-200:], 200)
     rsi = rsi_calc(closes, 14)
-
     e12 = ema_calc(closes[-12:], 12)
     e26 = ema_calc(closes[-26:], 26)
     macd = e12 - e26
-
     vol_avg = sum(vols[-20:]) / 20
     vol = vols[-1]
-
     score = 0
     reasons = []
     if c > ema50 and ema50 > ema200:
@@ -75,7 +89,6 @@ def analyze(symbol):
     if vol > vol_avg * 1.5:
         score += 2
         reasons.append(f"Vol {vol/vol_avg:.1f}x")
-
     low = lows[-1]
     atr = (max(highs[-14:]) - min(lows[-14:])) / 14
     stop = low - atr * 1.5
@@ -86,9 +99,23 @@ def analyze(symbol):
     return score, reasons, c, stop, target, qty
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"Diamond Bot Live - 400$\nRisk {RISK_PERCENT}% = 6$ per trade\nTimeframe {TIMEFRAME}\n\n/analysis BTC\n/scan"
-    )
+    await update.message.reply_text(f"Diamond Bot 400$ - News + Fear\n/scan\n/analysis BTC\n/news")
+
+async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("جاري جلب الاخبار...")
+    fg_val, fg_txt = get_fear_greed()
+    news = get_news()
+    msg = f"📊 Fear & Greed: {fg_val} - {fg_txt}\n"
+    if fg_val >= 75:
+        msg += "⚠️ طمع عالي - لا تدخل حتى لو GOLDEN\n\n"
+    elif fg_val <= 25:
+        msg += "✅ خوف عالي - وقت ممتاز للشراء\n\n"
+    else:
+        msg += "➖ سوق متوازن\n\n"
+    msg += "📰 اهم الاخبار:\n"
+    for n in news:
+        msg += f"- {n['title'][:80]}...\n"
+    await update.message.reply_text(msg)
 
 async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sym = "BTC/USDT"
@@ -96,20 +123,28 @@ async def analysis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sym = f"{context.args[0].upper()}/USDT"
     await update.message.reply_text(f"Analyzing {sym}...")
     try:
+        fg_val, fg_txt = get_fear_greed()
         score, reasons, c, stop, target, qty = analyze(sym)
-        txt = f"{sym} | {TIMEFRAME}\nPrice: {c}\nScore: {score}/6\nReasons: {' + '.join(reasons)}\nStop: {stop:.4f}\nTarget: {target:.4f}\nQty: {qty:.4f}\n{'GOLDEN' if score >=5 else 'WAIT'}"
+        status = "GOLDEN" if score >=5 else "GOOD" if score >=4 else "WATCH" if score >=2 else "WAIT"
+        if fg_val >= 85 and score >=5:
+            status = f"{status} BUT FEAR {fg_val} TOO HIGH - WAIT"
+        txt = f"{sym} | {TIMEFRAME}\nPrice: {c}\nF&G: {fg_val} ({fg_txt})\nScore: {score}/6\nReasons: {' + '.join(reasons) if reasons else 'None'}\nStop: {stop:.4f}\nTarget: {target:.4f}\nQty: {qty:.4f}\n{status}"
         await update.message.reply_text(txt)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
 async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Scanning {len(TOP_COINS)} coins...")
+    fg_val, fg_txt = get_fear_greed()
+    await update.message.reply_text(f"Scanning {len(TOP_COINS)} coins...\nF&G: {fg_val} ({fg_txt})")
     found = 0
     for s in TOP_COINS:
         try:
             time.sleep(0.3)
             score, reasons, c, stop, target, qty = analyze(s)
             if score >= 5:
+                if fg_val >= 85:
+                    await update.message.reply_text(f"{s} Score {score} BUT SKIP - Greed {fg_val} too high")
+                    continue
                 found += 1
                 await update.message.reply_text(f"GOLDEN: {s}\nScore {score}/6 - {' + '.join(reasons)}\nPrice {c:.4f}")
         except:
@@ -131,6 +166,7 @@ def main():
     app.add_handler(CommandHandler("analysis", analysis_cmd))
     app.add_handler(CommandHandler("price", analysis_cmd))
     app.add_handler(CommandHandler("scan", scan_cmd))
+    app.add_handler(CommandHandler("news", news_cmd))
     print("Bot Started")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
 
