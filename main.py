@@ -57,24 +57,25 @@ def analyze(symbol):
     if macd>0: score+=1; reasons.append("MACD Bullish")
     if vol>vol_avg*1.5: score+=2; reasons.append(f"Vol {vol/vol_avg:.1f}x")
 
-    # === التعديل النظامي للستوب لوز حسب المراجع ===
+    # === ستوب نظامي + فيبوناتشي ===
     atr=(max(highs[-14:])-min(lows[-14:]))/14
-
-    # 1. مسافة الستوب = max(1.8 * ATR, 2% من السعر)
     atr_distance = atr * 1.8
-    min_distance = c * 0.02 # حد أدنى 2% حسب المراجع
+    min_distance = c * 0.02
     stop_distance = max(atr_distance, min_distance)
 
-    # 2. ستوب وهدف بنظام R:R 1:2
     stop = c - stop_distance
-    target = c + (stop_distance * 2)
 
-    # 3. حساب الكمية على أساس المخاطرة الحقيقية
+    # فيبوناتشي TP على 3 مراحل
+    tp1 = c + (stop_distance * 1.0) # 38.2% - 1R
+    tp2 = c + (stop_distance * 1.618) # 61.8% - 1.618R
+    tp3 = c + (stop_distance * 2.618) # 100% - 2.618R
+
+    target = tp2 # للتوافق
+
     risk_amt=CAPITAL*(RISK_PERCENT/100)
-    risk_per_coin=stop_distance
-    qty=risk_amt/risk_per_coin if risk_per_coin>0 else 0
+    qty=risk_amt/stop_distance if stop_distance>0 else 0
 
-    return score,reasons,c,stop,target,qty
+    return score,reasons,c,stop,tp1,tp2,tp3,qty
 
 async def start(update, context):
     await update.message.reply_text("Diamond Bot 400$ Ready\n/analysis BTC\n/scan\n/news")
@@ -101,12 +102,23 @@ async def analysis_cmd(update, context):
     await update.message.reply_text(f"Analyzing {sym}...")
     try:
         fg_val, fg_txt = get_fear_greed()
-        score,reasons,c,stop,target,qty = analyze(sym)
+        score,reasons,c,stop,tp1,tp2,tp3,qty = analyze(sym)
         status="GOLDEN" if score>=5 else "GOOD" if score>=4 else "WATCH" if score>=2 else "WAIT"
-        # عرض نسبة الستوب والهدف
         stop_pct = abs(c-stop)/c*100
-        target_pct = abs(target-c)/c*100
-        txt=f"{sym} | {TIMEFRAME}\nPrice: {c}\nF&G: {fg_val} ({fg_txt})\nScore: {score}/6\nReasons: {' + '.join(reasons) if reasons else 'None'}\nStop: {stop:.4f} (-{stop_pct:.1f}%)\nTarget: {target:.4f} (+{target_pct:.1f}%)\nR:R 1:2 | Qty: {qty:.4f}\n{status}"
+        txt=(
+            f"{sym} | {TIMEFRAME}\n"
+            f"Price: {c}\n"
+            f"F&G: {fg_val} ({fg_txt})\n"
+            f"Score: {score}/6\n"
+            f"Reasons: {' + '.join(reasons) if reasons else 'None'}\n"
+            f"Stop: {stop:.4f} (-{stop_pct:.1f}%)\n"
+            f"🎯 Fibonacci TPs:\n"
+            f"TP1 38.2%: {tp1:.4f} (+{abs(tp1-c)/c*100:.1f}%) - بيع 40%\n"
+            f"TP2 61.8%: {tp2:.4f} (+{abs(tp2-c)/c*100:.1f}%) - بيع 30%\n"
+            f"TP3 100%: {tp3:.4f} (+{abs(tp3-c)/c*100:.1f}%) - اترك 30%\n"
+            f"Qty: {qty:.4f}\n"
+            f"{status}"
+        )
         await update.message.reply_text(txt)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
@@ -118,11 +130,11 @@ async def scan_cmd(update, context):
     for s in TOP_COINS:
         try:
             time.sleep(0.3)
-            score,reasons,c,stop,target,qty = analyze(s)
+            score,reasons,c,stop,tp1,tp2,tp3,qty = analyze(s)
             if score>=5:
                 if fg_val>=85: continue
                 found+=1
-                await update.message.reply_text(f"GOLDEN: {s}\nScore {score}/6 - {' + '.join(reasons)}\nPrice {c:.4f}")
+                await update.message.reply_text(f"GOLDEN: {s}\nScore {score}/6 - {' + '.join(reasons)}\nPrice {c:.4f}\nTP1 {tp1:.4f} | TP2 {tp2:.4f} | TP3 {tp3:.4f}")
         except: continue
     if found==0: await update.message.reply_text("No golden now.")
 
