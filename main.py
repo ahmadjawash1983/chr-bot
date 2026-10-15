@@ -1,196 +1,261 @@
-import os, threading, requests, ccxt, asyncio
-from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+import os
+import requests
+import numpy as np
+import telebot
+from datetime import datetime
 
-TOKEN = os.getenv("BOT_TOKEN")
-TIMEFRAME = "30m"
-CAPITAL = 400
-RISK_PERCENT = 1.5
-MAX_POSITION_PCT = 0.95
-FEE_PCT = 0.001
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-TOP_COINS = ["BTC/USDT","ETH/USDT","SOL/USDT","HNT/USDT","XRP/USDT","ARKM/USDT","ADA/USDT","AVAX/USDT","ONE/USDT","DOT/USDT","LINK/USDT","TRX/USDT","MATIC/USDT","POND/USDT","BCH/USDT","NEAR/USDT","CHR/USDT","TİA/USDT","ZRO/USDT","APT/USDT"]
+FEE = 0.001 # 0.1% بينانس سبوت
+RISK_PCT = 0.01 # 1% من الرصيد لكل صفقة
 
-app_flask = Flask(__name__)
-exchange = ccxt.kucoin()
+# ============ المؤشرات المصححة 100% ============
 
-@app_flask.route('/')
-def home():
-    return "Diamond Bot Live V3 - All Fixed"
+def get_klines(symbol="BTCUSDT", interval="4h", limit=200):
+    """جيب شموع مغلقة فقط - نستبعد الشمعة المفتوحة"""
+    symbol = symbol.upper().strip()
+    if "USDT" not in symbol:
+        symbol += "USDT"
 
-def get_fear_greed():
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10).json()
-        return int(r['data'][0]['value']), r['data'][0]['value_classification']
-    except:
-        return 50, "Unknown"
+        r = requests.get(url, timeout=10).json()
+        if isinstance(r, dict) and "msg" in r:
+            return None, f"الرمز {symbol} غير موجود"
+        # r = [[open_time, open, high, low, close,...]]
+        closes = [float(x[4]) for x in r]
+        # استبعاد الشمعة المفتوحة - اهم تصليح
+        closes = closes[:-1]
+        return closes, symbol
+    except Exception as e:
+        return None, str(e)
 
-def get_news():
-    try:
-        r = requests.get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN", timeout=10).json()
-        return r['Data'][:3]
-    except:
-        return []
-
-def ema_calc_proper(prices, period):
-    if len(prices) < period: return sum(prices)/len(prices)
-    ema = sum(prices[:period]) / period
+def ema(prices, period):
+    if len(prices) < period:
+        return None
     k = 2 / (period + 1)
-    for p in prices[period:]:
-        ema = p*k + ema*(1-k)
-    return ema
+    ema_val = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema_val = price * k + ema_val * (1 - k)
+    return ema_val
+
+def ema_series(prices, period):
+    """سلسلة EMA كاملة"""
+    if len(prices) < period:
+        return [None]*len(prices)
+    k = 2 / (period + 1)
+    series = []
+    ema_val = sum(prices[:period]) / period
+    for i in range(len(prices)):
+        if i < period-1:
+            series.append(None)
+        elif i == period-1:
+            series.append(ema_val)
+        else:
+            ema_val = prices[i] * k + ema_val * (1 - k)
+            series.append(ema_val)
+    return series
 
 def rsi_calc_proper(prices, period=14):
-    if len(prices) < period + 1: return 50
+    """RSI مصحح بطريقة Wilder الصحيحة"""
+    if len(prices) < period + 1:
+        return 50.0
     deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-    gains = [max(d, 0) for d in deltas[-period:]]
-    losses = [abs(min(d, 0)) for d in deltas[-period:]]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0: return 100 if avg_gain > 0 else 50
-    for i in range(period, len(deltas)):
-        avg_gain = (avg_gain*(period-1) + max(deltas[i],0)) / period
-        avg_loss = (avg_loss*(period-1) + abs(min(deltas[i],0))) / period
-    if avg_loss == 0: return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    gains = [d if d > 0 else 0 for d in deltas]
+    losses = [-d if d < 0 else 0 for d in deltas]
 
-def atr_calc_proper(bars, period=14):
-    if len(bars) < period+1: return 0
-    trs = []
-    for i in range(1, len(bars)):
-        high = bars[i][2]
-        low = bars[i][3]
-        prev_close = bars[i-1][4]
-        tr = max(high-low, abs(high-prev_close), abs(low-prev_close))
-        trs.append(tr)
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return round(100 - (100 / (1 + rs)), 2)
+
+def macd_calc_proper(prices):
+    """MACD حسب توثيق TradingView الرسمي"""
+    if len(prices) < 35:
+        return None
+    ema12 = ema_series(prices, 12)
+    ema26 = ema_series(prices, 26)
+
+    macd_line = []
+    for i in range(len(prices)):
+        if ema12[i] is None or ema26[i] is None:
+            macd_line.append(None)
+        else:
+            macd_line.append(ema12[i] - ema26[i])
+
+    # فلترة None
+    macd_clean = [x for x in macd_line if x is not None]
+    if len(macd_clean) < 9:
+        return None
+
+    # Signal = EMA9 لـ MACD
+    signal_series = ema_series(macd_clean, 9)
+    macd_val = macd_clean[-1]
+    signal_val = signal_series[-1]
+
+    if signal_val is None:
+        return None
+
+    histogram = macd_val - signal_val
+    return {
+        "macd": round(macd_val, 4),
+        "signal": round(signal_val, 4),
+        "hist": round(histogram, 4),
+        "bullish": histogram > 0
+    }
+
+def atr_calc(prices, period=14):
+    if len(prices) < period + 1:
+        return None
+    trs = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
     return sum(trs[-period:]) / period
 
-def analyze(symbol):
-    bars = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=201)
-    closed_bars = bars[:-1] # شمعة مغلقة فقط
-    if len(closed_bars) < 200: closed_bars = bars
-    closes=[b[4] for b in closed_bars]
-    vols=[b[5] for b in closed_bars]
-    c=closes[-1]
-    ema50=ema_calc_proper(closes,50)
-    ema200=ema_calc_proper(closes,200)
-    rsi=rsi_calc_proper(closes,14)
-    e12=ema_calc_proper(closes,12)
-    e26=ema_calc_proper(closes,26)
-    macd=e12-e26
-    macd_prev = ema_calc_proper(closes[:-1],12) - ema_calc_proper(closes[:-1],26)
-    vol_avg=sum(vols[-20:])/20 if len(vols)>=20 else vols[-1]
-    vol=vols[-1]
-    score=0; reasons=[]
-    if c>ema50 and ema50>ema200: score+=2; reasons.append("Uptrend EMA")
-    if rsi > 50 and rsi < 68: score+=1; reasons.append("RSI %d Bull" % int(rsi))
-    elif 40 < rsi < 50 and rsi > rsi_calc_proper(closes[:-1],14): score+=1; reasons.append("RSI Imp %d" % int(rsi))
-    if macd>0 and macd>macd_prev: score+=1; reasons.append("MACD Up")
-    elif macd>0: score+=0.5; reasons.append("MACD+")
-    if vol>vol_avg*1.5 and closes[-1] > closes[-2]: score+=2; reasons.append("Vol %.1fx" % (vol/vol_avg))
-    elif vol>vol_avg*1.5: score+=0.5; reasons.append("VolH %.1fx" % (vol/vol_avg))
-    atr = atr_calc_proper(closed_bars, 14)
-    if atr == 0: atr = c * 0.01
-    atr_distance = atr * 1.8
-    min_distance = c * 0.02
-    stop_distance = max(atr_distance, min_distance)
-    stop = c - stop_distance
-    tp1 = c + (stop_distance * 1.0)
-    tp2 = c + (stop_distance * 1.618)
-    tp3 = c + (stop_distance * 2.618)
-    risk_amt = CAPITAL * (RISK_PERCENT/100)
-    qty_by_risk = risk_amt / stop_distance if stop_distance>0 else 0
-    max_cost = CAPITAL * MAX_POSITION_PCT
-    qty_by_capital = max_cost / (c * (1+FEE_PCT)) if c>0 else 1
-    qty = min(qty_by_risk, qty_by_capital)
-    position_value = qty * c
-    return {"score": score, "reasons": reasons, "price": c, "stop": stop, "tp1": tp1, "tp2": tp2, "tp3": tp3, "qty": qty, "position_value": position_value, "atr": atr}
+# ============ إدارة المخاطر المصححة مع الرسوم ============
 
-async def error_handler(update, context):
-    print("Error: %s" % context.error)
-    # ما يخلي البوت يطفي لو صار Conflict
-    if "Conflict" in str(context.error):
-        print("Conflict ignored - another instance running")
-        await asyncio.sleep(5)
+def calc_trade_levels(price, atr, balance=1000):
+    # ستوب ديناميكي مع حد أدنى 2% + رسوم
+    stop_dist = max(1.8 * atr, price * 0.02)
+    stop_price = price - stop_dist
 
-async def start(update, context):
-    await update.message.reply_text("Diamond Bot V3 Ready\n/analysis BTC\n/scan\n/news")
+    # الخسارة الحقيقية = المسافة + رسوم دخول وخروج
+    real_risk_per_unit = (price - stop_price) + (price * FEE * 2)
+    risk_amount = balance * RISK_PCT
+    qty = risk_amount / real_risk_per_unit if real_risk_per_unit > 0 else 0
 
-async def news_cmd(update, context):
+    risk = price - stop_price
+    tp1 = price + risk * 1.0 # 38.2% - بيع 40%
+    tp2 = price + risk * 1.618 # 61.8% - بيع 30%
+    tp3 = price + risk * 2.618 # 100% - بيع 30%
+
+    return {
+        "stop": round(stop_price, 4),
+        "tp1": round(tp1, 4),
+        "tp2": round(tp2, 4),
+        "tp3": round(tp3, 4),
+        "qty": round(qty, 4),
+        "real_risk_pct": round((real_risk_per_unit/price)*100, 2)
+    }
+
+# ============ التحليل ============
+
+def analyze_symbol(symbol_input):
+    closes, res = get_klines(symbol_input)
+    if closes is None:
+        return f"❌ خطأ: {res}"
+
+    symbol = res
+    price = closes[-1]
+    rsi = rsi_calc_proper(closes)
+    macd = macd_calc_proper(closes)
+    atr = atr_calc(closes)
+
+    if not macd or not atr:
+        return "❌ بيانات غير كافية"
+
+    levels = calc_trade_levels(price, atr)
+
+    # تقييم GOLDEN بشروط صارمة
+    score = 0
+    if 45 < rsi < 60: score += 1
+    if macd["bullish"]: score += 1
+    if macd["hist"] > 0 and macd["macd"] > macd["signal"]: score += 1
+    if price > ema(closes, 50): score += 1
+
+    if score >= 4:
+        grade = "GOLDEN 🔥"
+    elif score == 3:
+        grade = "GOOD 👍"
+    else:
+        grade = "WEAK ⚠️"
+
+    msg = f"""📊 {symbol} - 4H (شموع مغلقة فقط)
+السعر: {price}
+RSI (Wilder): {rsi}
+MACD: {macd['macd']} | Signal: {macd['signal']} | Hist: {macd['hist']} {'📈' if macd['bullish'] else '📉'}
+ATR: {round(atr,4)}
+
+التقييم: {grade} ({score}/4)
+
+🛡️ إدارة مخاطر مع رسوم 0.2%:
+ستوب: {levels['stop']} (خسارة حقيقية {levels['real_risk_pct']}%)
+TP1 (40%): {levels['tp1']} = 1R
+TP2 (30%): {levels['tp2']} = 1.618R
+TP3 (30%): {levels['tp3']} = 2.618R
+الكمية لرصيد 1000$: {levels['qty']}
+"""
+    return msg
+
+# ============ أوامر البوت ============
+
+@bot.message_handler(commands=['analysis', 'a'])
+def handle_analysis(message):
     try:
-        fg_val, fg_txt = get_fear_greed()
-        msg = "F&G: %d - %s\n" % (fg_val, fg_txt)
-        if fg_val>=75: msg+="High greed\n\n"
-        elif fg_val<=25: msg+="High fear\n\n"
-        else: msg+="Neutral\n\n"
-        news = get_news()
-        if news:
-            for n in news: msg+="- %s\n" % n['title'][:80]
-        await update.message.reply_text(msg)
+        parts = message.text.split()
+        symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+        bot.send_message(message.chat.id, "⏳ جاري التحليل (بدون الشمعة المفتوحة)...")
+        result = analyze_symbol(symbol)
+        bot.send_message(message.chat.id, result)
     except Exception as e:
-        await update.message.reply_text("News err: %s" % e)
+        bot.send_message(message.chat.id, f"خطأ: {e}")
 
-async def analysis_cmd(update, context):
-    sym="BTC/USDT"
-    if context.args: sym="%s/USDT" % context.args[0].upper()
-    await update.message.reply_text("Analyzing %s..." % sym)
-    try:
-        fg_val, fg_txt = get_fear_greed()
-        d = await asyncio.to_thread(analyze, sym)
-        if d['score']>=5: status="GOLDEN"
-        elif d['score']>=4: status="GOOD"
-        elif d['score']>=2: status="WATCH"
-        else: status="WAIT"
-        reason_txt = " + ".join(d['reasons']) if d['reasons'] else "None"
-        lines = []
-        lines.append("%s | %s" % (sym, TIMEFRAME))
-        lines.append("Price: %.4f ATR: %.4f" % (d['price'], d['atr']))
-        lines.append("F&G: %d (%s)" % (fg_val, fg_txt))
-        lines.append("Score: %s/6 %s" % (d['score'], reason_txt))
-        lines.append("Stop: %.4f -%.1f%%" % (d['stop'], abs(d['price']-d['stop'])/d['price']*100))
-        lines.append("TP1 R1: %.4f +%.1f%% 40%%" % (d['tp1'], abs(d['tp1']-d['price'])/d['price']*100))
-        lines.append("TP2 R1.6: %.4f +%.1f%% 30%%" % (d['tp2'], abs(d['tp2']-d['price'])/d['price']*100))
-        lines.append("TP3 R2.6: %.4f +%.1f%% 30%%" % (d['tp3'], abs(d['tp3']-d['price'])/d['price']*100))
-        lines.append("Qty: %.4f Pos: $%.2f" % (d['qty'], d['position_value']))
-        lines.append(status)
-        txt = "\n".join(lines)
-        await update.message.reply_text(txt)
-    except Exception as e:
-        await update.message.reply_text("Error: %s" % e)
+@bot.message_handler(commands=['scan'])
+def handle_scan(message):
+    coins = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT","ADAUSDT","AVAXUSDT","DOGEUSDT","LINKUSDT","CHRUSDT"]
+    bot.send_message(message.chat.id, "🔍 فحص 10 عملات...")
+    for c in coins:
+        res = analyze_symbol(c)
+        if "GOLDEN" in res:
+            bot.send_message(message.chat.id, res)
 
-async def scan_cmd(update, context):
-    fg_val, fg_txt = get_fear_greed()
-    await update.message.reply_text("Scanning %d coins..." % len(TOP_COINS))
-    found=0
-    for s in TOP_COINS:
-        try:
-            await asyncio.sleep(0.4)
-            d = await asyncio.to_thread(analyze, s)
-            if d['score']>=5:
-                if fg_val>=85: continue
-                found+=1
-                msg = "GOLDEN: %s Score %s Price %.4f Pos $%.0f TP1 %.4f TP2 %.4f TP3 %.4f" % (s, d['score'], d['price'], d['position_value'], d['tp1'], d['tp2'], d['tp3'])
-                await update.message.reply_text(msg)
-        except: continue
-    if found==0: await update.message.reply_text("No golden now.")
+@bot.message_handler(commands=['backtest'])
+def handle_backtest(message):
+    parts = message.text.split()
+    symbol = parts[1] if len(parts) > 1 else "BTCUSDT"
+    closes, _ = get_klines(symbol, limit=300)
+    if not closes:
+        bot.send_message(message.chat.id, "خطأ بالرمز")
+        return
 
-def run_flask():
-    port=int(os.environ.get("PORT",10000))
-    app_flask.run(host='0.0.0.0', port=port)
+    wins = 0
+    total = 0
+    pnl = 0
+    for i in range(100, len(closes)-20):
+        slice_prices = closes[:i]
+        rsi = rsi_calc_proper(slice_prices)
+        macd = macd_calc_proper(slice_prices)
+        if not macd: continue
+        if 45 < rsi < 60 and macd["bullish"]:
+            total += 1
+            entry = slice_prices[-1]
+            atr = atr_calc(slice_prices)
+            if not atr: continue
+            tp = entry + (max(1.8*atr, entry*0.02) * 1.618)
+            sl = entry - max(1.8*atr, entry*0.02)
+            # تحقق بعد 10 شموع مع رسوم
+            future = closes[i:i+10]
+            if not future: continue
+            max_p = max(future)
+            min_p = min(future)
+            if max_p >= tp:
+                wins += 1
+                pnl += (tp - entry)/entry - FEE*2
+            elif min_p <= sl:
+                pnl -= (entry - sl)/entry + FEE*2
 
-def main():
-    if not TOKEN: print("BOT_TOKEN missing"); return
-    threading.Thread(target=run_flask, daemon=True).start()
-    app=Application.builder().token(TOKEN).build()
-    app.add_error_handler(error_handler)
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("analysis", analysis_cmd))
-    app.add_handler(CommandHandler("price", analysis_cmd))
-    app.add_handler(CommandHandler("scan", scan_cmd))
-    app.add_handler(CommandHandler("news", news_cmd))
-    print("Bot V3 Started - Conflict protected")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    winrate = (wins/total*100) if total>0 else 0
+    bot.send_message(message.chat.id, f"📈 باكتيست {symbol} (مع رسوم 0.2%):\nصفقات GOLDEN: {total}\nنجاح: {wins}\nنسبة نجاح: {round(winrate,1)}%\nصافي ربح تراكمي: {round(pnl*100,2)}%")
 
-if __name__=='__main__': main()
+@bot.message_handler(commands=['start','help'])
+def handle_start(message):
+    bot.send_message(message.chat.id, "Diamond Bot V5 ✅\n/analysis BTC\n/scan\n/backtest CHR\n\nكل الحسابات: شموع مغلقة فقط + Wilder RSI + TradingView MACD + رسوم")
+
+print("Bot V5 running...")
+bot.infinity_polling()
