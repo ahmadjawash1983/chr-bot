@@ -56,9 +56,24 @@ def analyze(symbol):
     if 30<rsi<50: score+=1; reasons.append(f"RSI {rsi:.0f}")
     if macd>0: score+=1; reasons.append("MACD Bullish")
     if vol>vol_avg*1.5: score+=2; reasons.append(f"Vol {vol/vol_avg:.1f}x")
-    atr=(max(highs[-14:])-min(lows[-14:]))/14; low=lows[-1]; stop=low-atr*1.5
-    risk_amt=CAPITAL*(RISK_PERCENT/100); risk_per_coin=c-stop if c>stop else atr
-    qty=risk_amt/risk_per_coin if risk_per_coin>0 else 0; target=c+atr*3
+
+    # === التعديل النظامي للستوب لوز حسب المراجع ===
+    atr=(max(highs[-14:])-min(lows[-14:]))/14
+
+    # 1. مسافة الستوب = max(1.8 * ATR, 2% من السعر)
+    atr_distance = atr * 1.8
+    min_distance = c * 0.02 # حد أدنى 2% حسب المراجع
+    stop_distance = max(atr_distance, min_distance)
+
+    # 2. ستوب وهدف بنظام R:R 1:2
+    stop = c - stop_distance
+    target = c + (stop_distance * 2)
+
+    # 3. حساب الكمية على أساس المخاطرة الحقيقية
+    risk_amt=CAPITAL*(RISK_PERCENT/100)
+    risk_per_coin=stop_distance
+    qty=risk_amt/risk_per_coin if risk_per_coin>0 else 0
+
     return score,reasons,c,stop,target,qty
 
 async def start(update, context):
@@ -88,7 +103,10 @@ async def analysis_cmd(update, context):
         fg_val, fg_txt = get_fear_greed()
         score,reasons,c,stop,target,qty = analyze(sym)
         status="GOLDEN" if score>=5 else "GOOD" if score>=4 else "WATCH" if score>=2 else "WAIT"
-        txt=f"{sym} | {TIMEFRAME}\nPrice: {c}\nF&G: {fg_val} ({fg_txt})\nScore: {score}/6\nReasons: {' + '.join(reasons) if reasons else 'None'}\nStop: {stop:.4f}\nTarget: {target:.4f}\nQty: {qty:.4f}\n{status}"
+        # عرض نسبة الستوب والهدف
+        stop_pct = abs(c-stop)/c*100
+        target_pct = abs(target-c)/c*100
+        txt=f"{sym} | {TIMEFRAME}\nPrice: {c}\nF&G: {fg_val} ({fg_txt})\nScore: {score}/6\nReasons: {' + '.join(reasons) if reasons else 'None'}\nStop: {stop:.4f} (-{stop_pct:.1f}%)\nTarget: {target:.4f} (+{target_pct:.1f}%)\nR:R 1:2 | Qty: {qty:.4f}\n{status}"
         await update.message.reply_text(txt)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
