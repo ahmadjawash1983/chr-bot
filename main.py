@@ -417,7 +417,7 @@ def check_liquidity(symbol, bars):
 
     try:
         with exchange_lock:
-            book = exchange.fetch_order_book(symbol, limit=10)
+            book = exchange.fetch_order_book(symbol, limit=20)
 
         bids = book.get("bids") or []
         asks = book.get("asks") or []
